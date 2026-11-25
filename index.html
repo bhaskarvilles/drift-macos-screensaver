@@ -79,50 +79,79 @@
     return p;
   }
 
+  // S = device pixels per "design pixel" (design = 1440x900 CSS px).
+  // Streak size, speed and pattern scale with S so every display looks the same.
+  let S = 1, SCALE = 0.0016, activeN = 0, maxN = 0, quality = 1;
+
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = canvas.width = Math.floor(innerWidth * dpr);
-    H = canvas.height = Math.floor(innerHeight * dpr);
-    const count = Math.min(26000, Math.floor((W * H) / (dpr * dpr) / 70));
-    particles = Array.from({ length: count }, () => {
+    dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const cssW = innerWidth, cssH = innerHeight;
+    const fit = Math.min(2.2, Math.max(0.7, Math.min(cssW, cssH) / 900));
+    S = dpr * fit;
+    SCALE = 0.0016 / S;
+    W = canvas.width = Math.max(1, Math.floor(cssW * dpr));
+    H = canvas.height = Math.max(1, Math.floor(cssH * dpr));
+    // Same visual density on any screen, capped for performance
+    maxN = Math.min(30000, Math.floor((W * H) / (S * S) / 70));
+    particles = Array.from({ length: maxN }, () => {
       const p = spawn({});
       p.age = Math.random() * p.life;
       return p;
     });
+    activeN = Math.floor(maxN * quality);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
   }
   addEventListener('resize', resize);
+  addEventListener('orientationchange', resize);
+  // Re-run when the window moves to a monitor with a different pixel ratio
+  (function watchDpr() {
+    const mq = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    mq.addEventListener('change', () => { resize(); watchDpr(); }, { once: true });
+  })();
   resize();
 
-  const SCALE = 0.0016 / dpr;
   let t = 0, last = performance.now();
+  // Adaptive quality: learn the display's frame interval, trim particles if it can't keep up
+  let emaMs = 16.7, minMs = 1000, lastCheck = performance.now();
 
   function frame(now) {
-    const dt = Math.min(3, (now - last) / 16.667);
+    const ms = now - last;
+    const dt = Math.min(4, ms / 16.667); // 1.0 == one 60 Hz frame; works at any refresh rate
     last = now;
+    if (ms > 0 && ms < 250) {
+      emaMs += (ms - emaMs) * 0.05;
+      if (now - lastCheck > 1500) {
+        minMs = Math.min(minMs * 1.002, emaMs); // refresh interval estimate
+        if (emaMs > minMs * 1.45 && quality > 0.3) quality = Math.max(0.3, quality * 0.9);
+        else if (emaMs < minMs * 1.12 && quality < 1) quality = Math.min(1, quality * 1.04);
+        activeN = Math.floor(maxN * quality);
+        lastCheck = now;
+      }
+    }
     t += 0.0016 * dt;
 
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    // Trail fade is time-based so it looks identical at 30, 60, 144 or 240 Hz
+    ctx.fillStyle = `rgba(0,0,0,${(1 - Math.pow(0.45, dt)).toFixed(3)})`;
     ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
-    ctx.lineWidth = 2.6 * dpr;
+    ctx.lineWidth = 2.6 * S;
 
-    for (let i = 0; i < particles.length; i++) {
+    for (let i = 0; i < activeN; i++) {
       const p = particles[i];
       const nx = p.x * SCALE, ny = p.y * SCALE;
       // Flow angle: diagonal sweep with swirling noise
       const ang = -0.75 + noise(nx, ny, t) * 4.2 + noise(nx * 2.3, ny * 2.3, t * 1.7 + 9) * 0.9;
       const dx = Math.cos(ang), dy = Math.sin(ang);
 
-      const speed = (0.35 + 0.65 * (noise(nx * 0.8 + 40, ny * 0.8, t * 0.5) * 0.5 + 0.5)) * 0.9 * dpr;
+      const speed = (0.35 + 0.65 * (noise(nx * 0.8 + 40, ny * 0.8, t * 0.5) * 0.5 + 0.5)) * 0.9 * S;
       p.x += dx * speed * dt;
       p.y += dy * speed * dt;
       p.age += dt;
 
-      if (p.age > p.life || p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) {
+      if (p.age > p.life || p.x < -40 * S || p.x > W + 40 * S || p.y < -40 * S || p.y > H + 40 * S) {
         spawn(p);
         continue;
       }
@@ -138,7 +167,7 @@
       const hue = noise(nx * 0.7 + 300, ny * 0.7, t * 0.4) * 0.5 + 0.5;
       const c = colorAt((hue - 0.5) * 2.2 + 0.5 + noise(nx * 3 + 500, ny * 3, t) * 0.15);
 
-      const L = (12 + 22 * bright) * p.len * dpr;
+      const L = (12 + 22 * bright) * p.len * S;
       const tx = p.x - dx * L, ty = p.y - dy * L;
       const g = ctx.createLinearGradient(tx, ty, p.x, p.y);
       g.addColorStop(0, `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},0)`);
