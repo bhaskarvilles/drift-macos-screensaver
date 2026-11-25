@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Murugan</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #bg {
+    position: fixed; inset: -6%; background: url(/murugan.jpg) center / cover;
+    filter: blur(28px) brightness(.55) saturate(1.2);
+  }
+  #stage { position: fixed; inset: 0; overflow: hidden; cursor: none; }
+  #zoom { position: absolute; transform-origin: 50% 55%; animation: drift 38s ease-in-out infinite alternate; }
+  #zoom img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  @keyframes drift {
+    from { transform: scale(1.0) translate(0, 0); }
+    to   { transform: scale(1.045) translate(-0.6%, -0.8%); }
+  }
+  #hint {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    font: 12px system-ui, sans-serif; color: rgba(255,255,255,.6);
+    background: rgba(0,0,0,.45); padding: 6px 12px; border-radius: 999px;
+    transition: opacity 1.2s; pointer-events: none;
+  }
+  @media (prefers-reduced-motion: reduce) { #zoom { animation: none; } }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="stage">
+  <div id="zoom">
+    <img id="art" src="/murugan.jpg" alt="">
+    <canvas id="fx"></canvas>
+  </div>
+</div>
+<div id="hint">Click or press F for fullscreen</div>
+<script>
+(() => {
+  const ASPECT = 852 / 1846;
+  const stage = document.getElementById('stage');
+  const zoom = document.getElementById('zoom');
+  const cv = document.getElementById('fx');
+  const ctx = cv.getContext('2d');
+  let W = 1, H = 1, dpr = 1, U = 1;
+
+  // Positions as fractions of the artwork (x, y)
+  const SPARKS = [
+    [0.50, 0.385, 1.2], [0.43, 0.395, 0.8], [0.57, 0.40, 0.8],   // crown
+    [0.22, 0.395, 1.1], [0.23, 0.46, 0.7],                         // staff tip
+    [0.46, 0.50, 0.9], [0.52, 0.50, 0.9], [0.49, 0.54, 0.8],       // necklaces
+    [0.47, 0.615, 1.2], [0.36, 0.62, 0.8], [0.60, 0.62, 0.8],      // belt
+    [0.76, 0.555, 0.8], [0.78, 0.64, 0.9], [0.43, 0.405, 0.6]      // armband, bracelet
+  ].map(s => ({ x: s[0], y: s[1], r: s[2], ph: Math.random() * 6.28, sp: 0.6 + Math.random() * 1.2 }));
+
+  const SUN = { x: 0.075, y: 0.045 };
+
+  function layout() {
+    const vw = innerWidth, vh = innerHeight;
+    // Phones (tall screens): fill the screen, crop a little. Wider screens: fit height, blurred sides.
+    const h = vw / vh <= 0.7 ? Math.max(vh, vw / ASPECT) : vh;
+    const w = h * ASPECT;
+    zoom.style.width = w + 'px';
+    zoom.style.height = h + 'px';
+    zoom.style.left = (vw - w) / 2 + 'px';
+    zoom.style.top = (vh - h) / 2 + 'px';
+    dpr = Math.min(devicePixelRatio || 1, 2);
+    W = cv.width = Math.floor(w * dpr);
+    H = cv.height = Math.floor(h * dpr);
+    U = W / 472; // size unit relative to the 472px-wide design
+  }
+  addEventListener('resize', layout);
+  layout();
+
+  // ---- Petals ----
+  const petals = [];
+  const PETAL_COLS = ['255,105,160', '255,70,140', '255,150,190', '240,60,120'];
+  function newPetal(initial) {
+    const depth = Math.random();
+    return {
+      x: initial ? Math.random() : 0.62 + Math.random() * 0.5,
+      y: initial ? Math.random() : -0.03 - Math.random() * 0.1,
+      z: depth,
+      s: (3 + depth * 6) * (0.7 + Math.random() * 0.6),
+      vx: -0.004 - Math.random() * 0.012,
+      vy: 0.012 + depth * 0.03,
+      rot: Math.random() * 6.28, vr: (Math.random() - 0.5) * 2.4,
+      sw: Math.random() * 6.28, swS: 0.6 + Math.random() * 1.4,
+      col: PETAL_COLS[(Math.random() * PETAL_COLS.length) | 0]
+    };
+  }
+  for (let i = 0; i < 34; i++) petals.push(newPetal(true));
+
+  // ---- Clouds (sky only) ----
+  const clouds = Array.from({ length: 7 }, () => ({
+    x: Math.random() * 1.4 - 0.2, y: 0.07 + Math.random() * 0.2,
+    w: 0.18 + Math.random() * 0.2, sp: 0.002 + Math.random() * 0.004, a: 0.10 + Math.random() * 0.12
+  }));
+
+  // ---- Dapples on ground ----
+  const dapples = Array.from({ length: 16 }, () => ({
+    x: Math.random(), y: 0.88 + Math.random() * 0.12, r: 0.05 + Math.random() * 0.07,
+    ph: Math.random() * 6.28, sp: 0.3 + Math.random() * 0.6
+  }));
+
+  function sparkle(x, y, size, a) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, size);
+    g.addColorStop(0, `rgba(255,248,220,${a})`);
+    g.addColorStop(0.25, `rgba(255,210,110,${a * 0.5})`);
+    g.addColorStop(1, 'rgba(255,200,80,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, size, 0, 6.2832); ctx.fill();
+    ctx.strokeStyle = `rgba(255,245,210,${a * 0.9})`;
+    ctx.lineWidth = Math.max(1, size * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(x - size * 1.4, y); ctx.lineTo(x + size * 1.4, y);
+    ctx.moveTo(x, y - size * 1.4); ctx.lineTo(x, y + size * 1.4);
+    ctx.stroke();
+  }
+
+  let T = 0, last = performance.now();
+  function frame(now) {
+    const dtS = Math.min(0.1, (now - last) / 1000);  // seconds, refresh-rate independent
+    last = now; T += dtS;
+    ctx.clearRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Clouds
+    for (const c of clouds) {
+      c.x += c.sp * dtS;
+      if (c.x - c.w > 1.1) c.x = -c.w - 0.1;
+      const cx = c.x * W, cy = c.y * H, rw = c.w * W;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rw);
+      g.addColorStop(0, `rgba(255,255,255,${c.a})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, W, H * 0.31); ctx.clip();
+      ctx.translate(cx, cy); ctx.scale(1, 0.32); ctx.translate(-cx, -cy);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, rw, 0, 6.2832); ctx.fill();
+      ctx.restore();
+    }
+
+    // Sun glow and rays
+    const sx = SUN.x * W, sy = SUN.y * H;
+    const pulse = 0.85 + 0.15 * Math.sin(T * 0.8) + 0.05 * Math.sin(T * 2.3);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, H * 0.62); ctx.clip();
+    for (let i = 0; i < 9; i++) {
+      const base = 0.15 + i * 0.2;
+      const ang = base + Math.sin(T * 0.25 + i * 1.7) * 0.05;
+      const spread = 0.045 + 0.02 * Math.sin(T * 0.4 + i);
+      const len = H * 0.7;
+      const a = (0.07 + 0.05 * Math.sin(T * 0.6 + i * 2.1)) * pulse;
+      const g = ctx.createLinearGradient(sx, sy, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+      g.addColorStop(0, `rgba(255,236,170,${a * 2})`);
+      g.addColorStop(1, 'rgba(255,236,170,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + Math.cos(ang - spread) * len, sy + Math.sin(ang - spread) * len);
+      ctx.lineTo(sx + Math.cos(ang + spread) * len, sy + Math.sin(ang + spread) * len);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    const gr = W * 0.34 * pulse;
+    const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, gr);
+    sg.addColorStop(0, 'rgba(255,240,190,0.55)');
+    sg.addColorStop(0.3, 'rgba(255,200,90,0.2)');
+    sg.addColorStop(1, 'rgba(255,180,60,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(sx, sy, gr, 0, 6.2832); ctx.fill();
+
+    // Dappled light on the ground
+    for (const d of dapples) {
+      const a = (0.05 + 0.05 * Math.sin(T * d.sp + d.ph));
+      const x = (d.x + Math.sin(T * 0.15 + d.ph) * 0.01) * W, y = d.y * H, r = d.r * W;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255,215,140,${a})`);
+      g.addColorStop(1, 'rgba(255,215,140,0)');
+      ctx.fillStyle = g;
+      ctx.save(); ctx.translate(x, y); ctx.scale(1.6, 0.6); ctx.translate(-x, -y);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill(); ctx.restore();
+    }
+
+    // Gold sparkles
+    for (const s of SPARKS) {
+      const v = Math.sin(T * s.sp + s.ph);
+      const a = Math.max(0, v) ** 3;
+      if (a < 0.03) continue;
+      sparkle(s.x * W, s.y * H, (6 + 9 * a) * s.r * U, a * 0.9);
+    }
+
+    // Petals (normal blending so they look solid)
+    ctx.globalCompositeOperation = 'source-over';
+    for (let i = 0; i < petals.length; i++) {
+      const p = petals[i];
+      p.sw += p.swS * dtS;
+      p.x += (p.vx + Math.sin(p.sw) * 0.01) * dtS;
+      p.y += p.vy * dtS;
+      p.rot += p.vr * dtS;
+      if (p.y > 1.05 || p.x < -0.1) { petals[i] = newPetal(false); continue; }
+      const sz = p.s * U;
+      ctx.save();
+      ctx.translate(p.x * W, p.y * H);
+      ctx.rotate(p.rot);
+      ctx.scale(1, 0.55 + 0.45 * Math.cos(p.sw * 1.3)); // tumbling
+      ctx.globalAlpha = 0.55 + p.z * 0.4;
+      ctx.fillStyle = `rgb(${p.col})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, sz, sz * 0.58, 0, 0, 6.2832);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  const hint = document.getElementById('hint');
+  const toggleFS = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+  stage.addEventListener('click', toggleFS);
+  addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') toggleFS(); });
+  setTimeout(() => (hint.style.opacity = 0), 5000);
+})();
+</script>
+</body>
+</html>
